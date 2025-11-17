@@ -7,10 +7,6 @@ import os
 
 
 class BeamSearchPlacement:
-    """
-    Beam Search搜索最优全注意力层位置
-    """
-    
     def __init__(
         self,
         super_network,
@@ -31,7 +27,6 @@ class BeamSearchPlacement:
         self.device = device
         self.num_layers = super_network.num_layers
         
-        # 设置为评估模式
         self.super_network.eval()
     
     @torch.no_grad()
@@ -54,7 +49,6 @@ class BeamSearchPlacement:
         total_correct = 0
         total_samples = 0
         
-        # 转换为bool列表(True=全注意力, False=线性注意力)
         layer_choices = [x == 0 for x in layer_config]
         
         for batch_idx, batch in enumerate(tqdm(
@@ -70,7 +64,6 @@ class BeamSearchPlacement:
             if attention_mask is not None:
                 attention_mask = attention_mask.to(self.device)
             
-            # 前向传播
             outputs = self.super_network(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -80,12 +73,9 @@ class BeamSearchPlacement:
             logits = outputs['logits']
             
             if task == "mmlu":
-                # MMLU任务:计算正确答案的损失
-                # 假设batch中有labels字段
                 labels = batch.get('labels', input_ids[:, 1:])
                 labels = labels.to(self.device)
                 
-                # 只计算最后一个token的损失
                 last_token_logits = logits[:, -1, :]
                 last_token_labels = labels[:, -1] if labels.dim() > 1 else labels
                 
@@ -98,11 +88,9 @@ class BeamSearchPlacement:
                 total_samples += input_ids.size(0)
             
             elif task in ["math", "retrieval"]:
-                # 数学/检索任务:计算准确率
                 labels = batch.get('labels', input_ids[:, 1:])
                 labels = labels.to(self.device)
                 
-                # 最后一个token的预测
                 preds = logits[:, -1, :].argmax(dim=-1)
                 last_token_labels = labels[:, -1] if labels.dim() > 1 else labels
                 
@@ -110,12 +98,9 @@ class BeamSearchPlacement:
                 total_correct += correct
                 total_samples += input_ids.size(0)
         
-        # 计算得分
         if task == "mmlu":
-            # MMLU: 返回负损失(越高越好)
             score = -total_loss / max(total_samples, 1)
         else:
-            # Math/Retrieval: 返回准确率
             score = total_correct / max(total_samples, 1)
         
         return score
@@ -146,14 +131,12 @@ class BeamSearchPlacement:
         print(f"任务: {task}")
         print(f"总层数: {self.num_layers}\n")
         
-        # 初始化beam:全部使用线性注意力(标记为1)
         beam = [{
             'config': [1] * self.num_layers,
             'score': float('-inf'),
             'history': []
         }]
         
-        # 逐步选择全注意力层
         for step in range(num_full_attention):
             print(f"\n{'='*60}")
             print(f"步骤 {step + 1}/{num_full_attention}")
@@ -161,19 +144,15 @@ class BeamSearchPlacement:
             
             candidates = []
             
-            # 对beam中的每个状态进行扩展
             for state in beam:
                 config = state['config'].copy()
                 history = state['history'].copy()
                 
-                # 尝试在每个位置放置全注意力
                 for layer_idx in range(self.num_layers):
-                    # 只在当前是线性注意力的位置尝试
                     if config[layer_idx] == 1:
                         new_config = config.copy()
-                        new_config[layer_idx] = 0  # 改为全注意力
-                        
-                        # 评估新配置
+                        new_config[layer_idx] = 0 
+
                         print(f"评估层 {layer_idx}...", end=' ')
                         score = self.evaluate_config(new_config, task)
                         print(f"得分: {score:.4f}")
@@ -186,17 +165,14 @@ class BeamSearchPlacement:
                             'last_layer': layer_idx
                         })
             
-            # 选择top-k
             candidates.sort(key=lambda x: x['score'], reverse=True)
             beam = candidates[:beam_width]
             
-            # 打印当前beam状态
             print(f"\n当前Beam状态:")
             for i, state in enumerate(beam):
                 print(f"  Rank {i+1}: 得分={state['score']:.4f}, "
                       f"层={state['history']}")
         
-        # 返回最佳配置
         best_state = beam[0]
         best_config = best_state['config']
         full_attn_layers = [i for i, x in enumerate(best_config) if x == 0]
@@ -235,10 +211,9 @@ class BeamSearchPlacement:
             
             scores = []
             
-            # 对每一层,单独使用全注意力,其余使用线性注意力
             for layer_idx in range(self.num_layers):
-                config = [1] * self.num_layers  # 全部线性注意力
-                config[layer_idx] = 0  # 当前层使用全注意力
+                config = [1] * self.num_layers
+                config[layer_idx] = 0
                 
                 score = self.evaluate_config(config, task)
                 scores.append(score)
@@ -247,7 +222,6 @@ class BeamSearchPlacement:
             
             importance_scores[task] = scores
         
-        # 保存结果
         output_file = os.path.join(
             self.config.output_dir,
             "layer_importance_analysis.json"
@@ -266,7 +240,6 @@ class BeamSearchPlacement:
         task: str,
         filename: str = "beam_search_results.json"
     ):
-        """保存搜索结果"""
         results = {
             'config': best_config,
             'full_attention_layers': full_attn_layers,
@@ -283,11 +256,6 @@ class BeamSearchPlacement:
 
 
 class MultiTaskBeamSearch(BeamSearchPlacement):
-    """
-    多任务Beam Search
-    同时考虑多个任务的性能
-    """
-    
     def evaluate_multi_task_config(
         self,
         layer_config: List[int],

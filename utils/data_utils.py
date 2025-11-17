@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import Dataset, DataLoader, DistributedSampler
+from torch.utils.data import Dataset, DataLoader, DistributedSampler, IterableDataset
 from transformers import AutoTokenizer
 from datasets import load_dataset
 from typing import Optional, Dict, List
@@ -7,8 +7,6 @@ import os
 
 
 class TextDataset(Dataset):
-    """文本数据集"""
-    
     def __init__(
         self,
         data_path: str,
@@ -26,17 +24,14 @@ class TextDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
         
-        # 加载数据
         if os.path.isfile(data_path):
-            # 从本地文件加载
             with open(data_path, 'r', encoding='utf-8') as f:
                 self.texts = [line.strip() for line in f if line.strip()]
         else:
-            # 从HuggingFace加载
             dataset = load_dataset(data_path, split=split, streaming=True)
             self.texts = []
             for i, example in enumerate(dataset):
-                if i >= 10000:  # 限制大小用于测试
+                if i >= 10000:
                     break
                 text = example.get('text', '')
                 if text:
@@ -50,7 +45,6 @@ class TextDataset(Dataset):
     def __getitem__(self, idx):
         text = self.texts[idx]
         
-        # 分词
         encoded = self.tokenizer(
             text,
             max_length=self.max_length,
@@ -66,8 +60,6 @@ class TextDataset(Dataset):
 
 
 class StreamingTextDataset:
-    """流式文本数据集(用于大规模数据)"""
-    
     def __init__(
         self,
         dataset_name: str,
@@ -87,7 +79,6 @@ class StreamingTextDataset:
         self.tokenizer = tokenizer
         self.max_length = max_length
         
-        # 加载流式数据集
         self.dataset = load_dataset(
             dataset_name,
             dataset_config,
@@ -103,7 +94,6 @@ class StreamingTextDataset:
             if not text:
                 continue
             
-            # 分词
             encoded = self.tokenizer(
                 text,
                 max_length=self.max_length,
@@ -117,10 +107,16 @@ class StreamingTextDataset:
                 'attention_mask': encoded['attention_mask'].squeeze(0)
             }
 
-
-class MMEvalDataset(Dataset):
-    """多选题评估数据集(用于MMLU等)"""
+class StreamingDatasetWrapper(IterableDataset):
     
+    def __init__(self, streaming_dataset):
+        super().__init__()
+        self.streaming_dataset = streaming_dataset
+    
+    def __iter__(self):
+        return iter(self.streaming_dataset)
+
+class MMEvalDataset(Dataset): 
     def __init__(
         self,
         data_path: str,
@@ -136,8 +132,7 @@ class MMEvalDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
         
-        # 加载MMLU风格的数据
-        # 格式: {"question": "...", "choices": ["A", "B", "C", "D"], "answer": 0}
+        # {"question": "...", "choices": ["A", "B", "C", "D"], "answer": 0}
         import json
         self.examples = []
         
@@ -155,7 +150,6 @@ class MMEvalDataset(Dataset):
     def __getitem__(self, idx):
         example = self.examples[idx]
         
-        # 构造prompt
         question = example['question']
         choices = example['choices']
         answer = example['answer']
@@ -165,7 +159,6 @@ class MMEvalDataset(Dataset):
             prompt += f"{chr(65+i)}. {choice}\n"
         prompt += "Answer:"
         
-        # 分词
         encoded = self.tokenizer(
             prompt,
             max_length=self.max_length,
@@ -187,22 +180,8 @@ def create_dataloaders(
     world_size: int = 1,
     rank: int = 0
 ) -> tuple:
-    """
-    创建训练和评估数据加载器
-    
-    Args:
-        config: PostNASConfig配置
-        tokenizer: 分词器
-        world_size: 分布式训练world size
-        rank: 当前进程rank
-        
-    Returns:
-        train_dataloader, eval_dataloader
-    """
-    # 训练数据集
     if config.streaming and config.dataset_name:
-        # 流式数据集
-        train_dataset = StreamingTextDataset(
+        streaming_dataset = StreamingTextDataset(
             dataset_name=config.dataset_name,
             dataset_config=config.dataset_config,
             tokenizer=tokenizer,
@@ -210,14 +189,15 @@ def create_dataloaders(
             split="train"
         )
         
-        # 流式数据集不需要sampler
+        train_dataset = StreamingDatasetWrapper(streaming_dataset)
+        
         train_dataloader = DataLoader(
             train_dataset,
             batch_size=config.per_device_train_batch_size,
-            num_workers=config.num_workers
+            num_workers=0,
+            pin_memory=False
         )
     else:
-        # 常规数据集
         train_dataset = TextDataset(
             data_path=config.train_data_path,
             tokenizer=tokenizer,
@@ -225,7 +205,6 @@ def create_dataloaders(
             split="train"
         )
         
-        # 分布式sampler
         train_sampler = DistributedSampler(
             train_dataset,
             num_replicas=world_size,
@@ -242,25 +221,13 @@ def create_dataloaders(
             pin_memory=True
         )
     
-    # 评估数据集
     eval_dataloader = None
     if config.eval_data_path and os.path.exists(config.eval_data_path):
-        # 检查是否是多选题数据集
-        is_mc = config.search_task in ["mmlu", "math", "retrieval"]
-        
-        if is_mc:
-            eval_dataset = MMEvalDataset(
-                data_path=config.eval_data_path,
-                tokenizer=tokenizer,
-                max_length=config.max_seq_length
-            )
-        else:
-            eval_dataset = TextDataset(
-                data_path=config.eval_data_path,
-                tokenizer=tokenizer,
-                max_length=config.max_seq_length,
-                split="validation"
-            )
+        eval_dataset = MMEvalDataset(
+            data_path=config.eval_data_path,
+            tokenizer=tokenizer,
+            max_length=config.max_seq_length
+        )
         
         eval_sampler = DistributedSampler(
             eval_dataset,
@@ -292,8 +259,7 @@ def prepare_tokenizer(model_name: str):
         tokenizer
     """
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    
-    # 设置pad token
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     

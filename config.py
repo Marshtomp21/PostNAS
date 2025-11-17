@@ -2,21 +2,19 @@ import os
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-
 @dataclass
 class PostNASConfig:
-    """PostNAS实验完整配置"""
     
     # ========== 模型配置 ==========
-    base_model_name: str = "Qwen/Qwen2.5-0.5B"
+    base_model_name: str = "/public/liguoqi/.cache/huggingface/hub/models--Qwen--Qwen2.5-1.5B-Instruct/snapshots/989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
     teacher_model_name: Optional[str] = None  # 如果为None,使用base_model作为教师
     
     # ========== 训练配置 ==========
     learning_rate: float = 1e-4
     weight_decay: float = 0.01
     warmup_steps: int = 1000
-    max_steps: int = 50000  # 对应约5-10B tokens
-    gradient_accumulation_steps: int = 4
+    max_steps: int = 50000
+    gradient_accumulation_steps: int = 8
     max_grad_norm: float = 1.0
     
     # Batch配置
@@ -26,15 +24,22 @@ class PostNASConfig:
     # 序列长度
     max_seq_length: int = 2048
     
-    # ========== 数据配置 ==========
+    # ========== 训练数据配置 ==========
     train_data_path: str = "./data/train"
-    eval_data_path: str = "./data/eval"
     num_workers: int = 4
     
-    # 数据集名称(如果使用HuggingFace datasets)
-    dataset_name: Optional[str] = None  # 例如: "allenai/c4"
-    dataset_config: Optional[str] = None
+    # 训练数据集 - 通用预训练数据
+    dataset_name: Optional[str] = "allenai/c4"
+    dataset_config: Optional[str] = "en"
     streaming: bool = True
+    
+    # ========== 评估数据配置 ==========
+    eval_data_path: str = "./data/eval"
+    
+    # 评估数据集 - 使用MMLU
+    eval_dataset_name: Optional[str] = "cais/mmlu"
+    eval_dataset_config: Optional[str] = "all"
+    eval_dataset_split: str = "test"  # MMLU使用test或validation划分
     
     # ========== 分布式配置 ==========
     world_size: int = 8  # 8卡A800
@@ -67,7 +72,7 @@ class PostNASConfig:
     
     # ========== 蒸馏配置 ==========
     distillation_temperature: float = 2.0
-    distillation_alpha: float = 0.5  # CE loss和KL loss的权重
+    distillation_alpha: float = 0.5
     
     # ========== 混合精度配置 ==========
     fp16: bool = False
@@ -78,7 +83,6 @@ class PostNASConfig:
     resume_from_checkpoint: Optional[str] = None
     
     def __post_init__(self):
-        """创建必要的目录"""
         os.makedirs(self.output_dir, exist_ok=True)
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)

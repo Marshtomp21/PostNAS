@@ -15,7 +15,6 @@ from utils.data_utils import create_dataloaders, prepare_tokenizer
 
 
 def set_seed(seed: int):
-    """设置随机种子"""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -23,7 +22,6 @@ def set_seed(seed: int):
 
 
 def setup_distributed():
-    """初始化分布式环境"""
     if 'LOCAL_RANK' in os.environ:
         local_rank = int(os.environ['LOCAL_RANK'])
         world_size = int(os.environ['WORLD_SIZE'])
@@ -31,18 +29,15 @@ def setup_distributed():
         torch.cuda.set_device(local_rank)
         return local_rank, world_size
     else:
-        # 单GPU模式
         return 0, 1
 
 
 def cleanup_distributed():
-    """清理分布式环境"""
     if dist.is_initialized():
         dist.destroy_process_group()
 
 
 def print_config(config: PostNASConfig):
-    """打印配置信息"""
     print("\n" + "="*80)
     print("PostNAS 完整实现 - 配置信息")
     print("="*80)
@@ -82,10 +77,8 @@ def step1_train_super_network(
         print("第一步: 训练Once-for-all超网络")
         print("="*80 + "\n")
     
-    # 加载tokenizer
     tokenizer = prepare_tokenizer(config.base_model_name)
     
-    # 加载基础模型
     if local_rank == 0:
         print(f"加载基础模型: {config.base_model_name}")
     
@@ -95,16 +88,13 @@ def step1_train_super_network(
         device_map={"": local_rank}
     )
     
-    # 构建超网络
     if local_rank == 0:
         print("\n构建超网络...")
     
     super_network = OFASuperNetwork(base_model, freeze_mlp=True)
     
-    # 使用base_model作为教师模型
     teacher_model = base_model
     
-    # 创建数据加载器
     if local_rank == 0:
         print("\n加载数据...")
     
@@ -115,7 +105,6 @@ def step1_train_super_network(
         rank=local_rank
     )
     
-    # 创建训练器
     trainer = PostNASTrainer(
         config=config,
         super_network=super_network,
@@ -125,7 +114,6 @@ def step1_train_super_network(
         local_rank=local_rank
     )
     
-    # 训练
     trainer.train()
     
     if local_rank == 0:
@@ -150,7 +138,7 @@ def step2_beam_search(
         local_rank: 本地GPU rank
     """
     if local_rank != 0:
-        return  # 只在主进程执行
+        return
     
     device = torch.device(f"cuda:{local_rank}")
     
@@ -158,10 +146,8 @@ def step2_beam_search(
     print("第二步: Beam Search搜索最优层位置")
     print("="*80 + "\n")
     
-    # 加载tokenizer
     tokenizer = prepare_tokenizer(config.base_model_name)
     
-    # 创建评估数据加载器
     _, eval_dataloader = create_dataloaders(
         config,
         tokenizer,
@@ -173,7 +159,6 @@ def step2_beam_search(
         print("警告: 没有提供评估数据,跳过Beam Search")
         return
     
-    # 创建Beam Search对象
     searcher = BeamSearchPlacement(
         super_network=super_network,
         eval_dataloader=eval_dataloader,
@@ -181,21 +166,18 @@ def step2_beam_search(
         device=device
     )
     
-    # 执行搜索
     best_config, full_attn_layers = searcher.search(
         num_full_attention=config.num_full_attention,
         beam_width=config.beam_width,
         task=config.search_task
     )
     
-    # 保存结果
     searcher.save_search_results(
         best_config=best_config,
         full_attn_layers=full_attn_layers,
         task=config.search_task
     )
     
-    # 可选: 分析层重要性
     print("\n执行层重要性分析...")
     importance_scores = searcher.analyze_layer_importance(
         tasks=["mmlu", "math", "retrieval"]
@@ -208,17 +190,12 @@ def step2_beam_search(
 
 
 def main():
-    """主函数"""
-    # 设置随机种子
     set_seed(42)
-    
-    # 初始化分布式环境
+
     local_rank, world_size = setup_distributed()
-    
-    # 加载配置
+
     config = PostNASConfig()
     
-    # 打印配置(仅主进程)
     if local_rank == 0:
         print_config(config)
     
@@ -230,7 +207,6 @@ def main():
             world_size=world_size
         )
         
-        # 同步所有进程
         if dist.is_initialized():
             dist.barrier()
         
@@ -248,11 +224,9 @@ def main():
             print("\n下一步:")
             print("1. 查看输出目录中的搜索结果")
             print("2. 根据最优配置构建最终模型")
-            print("3. 继续第三步(线性注意力块选择)或第四步(硬件感知搜索)")
             print("="*80 + "\n")
     
     finally:
-        # 清理
         cleanup_distributed()
 
 
